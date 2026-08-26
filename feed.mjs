@@ -214,6 +214,41 @@ const findOpt = (selectedOptions, kind) => {
   return hit?.value || null;
 };
 
+// ---------------------------------------------------------------------------
+// GTIN vs MPN
+//
+// En estas tiendas los dos campos vienen cruzados respecto de lo que significan
+// en Shopify: `sku` guarda el EAN-13 (100% de las variantes pasan el checksum)
+// y `barcode` guarda el número de estilo de 8 dígitos — el mismo prefijo que el
+// handle (`12138115_2795706`), repetido idéntico en todas las variantes del
+// producto, así que no puede ser un GTIN.
+//
+// En vez de invertirlos a mano, se decide por checksum: el valor que valida
+// como GTIN va a g:gtin y el otro a g:mpn. Si algún día se corrige el dato en
+// Shopify, esto sigue publicando bien sin tocar el código.
+// ---------------------------------------------------------------------------
+const isGtin = (s) => {
+  if (!/^\d+$/.test(s) || ![8, 12, 13, 14].includes(s.length)) return false;
+  const digits = [...s].map(Number);
+  const check = digits.pop();
+  let sum = 0;
+  for (let i = digits.length - 1, mult = 3; i >= 0; i--, mult = mult === 3 ? 1 : 3) {
+    sum += digits[i] * mult;
+  }
+  return (10 - (sum % 10)) % 10 === check;
+};
+
+function identifiers(v) {
+  const barcode = String(v.barcode ?? '').trim();
+  const sku = String(v.sku ?? '').trim();
+  // Si los dos validan, gana el más largo: un número de estilo de 8 dígitos
+  // pasa el checksum 1 de cada 10 veces por pura casualidad, y ahí le estaría
+  // ganando al EAN-13 real. Empate -> gana barcode, que es el campo correcto.
+  const gtin = [barcode, sku].filter(isGtin).sort((a, b) => b.length - a.length)[0] || null;
+  const mpn = (gtin === sku ? barcode : sku) || barcode || null;
+  return { gtin, mpn };
+}
+
 const priceOf = (v) => {
   const base = Number(v.price);
   const cmp = Number(v.compareAtPrice);
@@ -226,7 +261,7 @@ const priceOf = (v) => {
 // ---------------------------------------------------------------------------
 function buildXml(products) {
   const items = [];
-  const skipped = { noPrice: 0, noImage: 0 };
+  const skipped = { noPrice: 0, noImage: 0, noGtin: 0 };
   let variantCount = 0;
 
   for (const p of products) {
@@ -265,9 +300,11 @@ function buildXml(products) {
       if (p.vendor) L.push(`    <g:brand>${esc(p.vendor)}</g:brand>`);
       if (p.productType) L.push(`    <g:product_type>${esc(p.productType)}</g:product_type>`);
       L.push(`    <g:condition>new</g:condition>`);
-      if (v.barcode) L.push(`    <g:gtin>${esc(v.barcode)}</g:gtin>`);
-      if (v.sku) L.push(`    <g:mpn>${esc(v.sku)}</g:mpn>`);
-      if (!v.barcode && !v.sku) L.push(`    <g:identifier_exists>no</g:identifier_exists>`);
+      const { gtin, mpn } = identifiers(v);
+      if (gtin) L.push(`    <g:gtin>${esc(gtin)}</g:gtin>`);
+      else skipped.noGtin++;
+      if (mpn) L.push(`    <g:mpn>${esc(mpn)}</g:mpn>`);
+      if (!gtin && !mpn) L.push(`    <g:identifier_exists>no</g:identifier_exists>`);
       if (size) L.push(`    <g:size>${esc(size)}</g:size>`);
       if (color) L.push(`    <g:color>${esc(color)}</g:color>`);
 
@@ -311,10 +348,12 @@ function buildJson(products) {
     for (const v of p.variants) {
       const { regular, sale } = priceOf(v);
       if (!(regular > 0)) continue;
+      const { gtin, mpn } = identifiers(v);
       variants.push({
         id: numId(v.id),
         sku: v.sku || null,
-        gtin: v.barcode || null,
+        gtin,                 // el identificador que valida checksum GTIN
+        mpn,                  // el otro (en estas tiendas, el nº de estilo)
         title: v.title && v.title !== 'Default Title' ? v.title : null,
         options: Object.fromEntries((v.selectedOptions || []).map((o) => [o.name, o.value])),
         size: findOpt(v.selectedOptions, 'size'),
@@ -370,3 +409,4 @@ console.log(`[${SHOP}]   -> ${OUT}`);
 console.log(`[${SHOP}]   -> ${OUT_JSON}`);
 if (skipped.noPrice) console.log(`[${SHOP}]   ! ${skipped.noPrice} variantes sin precio (omitidas)`);
 if (skipped.noImage) console.log(`[${SHOP}]   ! ${skipped.noImage} variantes sin imagen (incluidas sin g:image_link)`);
+if (skipped.noGtin) console.log(`[${SHOP}]   ! ${skipped.noGtin} variantes sin un GTIN valido (van con g:mpn solo)`);
