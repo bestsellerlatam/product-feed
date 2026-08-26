@@ -10,13 +10,14 @@ name: Keep-alive
 # retrasa o directamente saltea corridas programadas, y con cadencia mensual
 # una sola falla te deja pegado al límite de 60 días.
 #
-# El minuto 17 tampoco es capricho: los crons en :00 son los slots más
+# El minuto corrido tampoco es capricho: los crons en :00 son los slots más
 # congestionados de GitHub Actions (todo el mundo elige la hora en punto), y
-# es justo cuando más se retrasan o se pierden corridas.
+# es justo cuando más se retrasan o se pierden corridas. :43 y no :30 ni :37
+# porque esos son los "minutos random" que elige todo el mundo.
 
 on:
   schedule:
-    - cron: '17 6 1,15 * *'   # días 1 y 15, 06:17 UTC (minuto corrido a propósito, ver abajo)
+    - cron: '43 6 1,15 * *'   # días 1 y 15, 06:43 UTC (minuto corrido a propósito, ver abajo)
   workflow_dispatch: {}        # y a mano desde la pestaña Actions
 
 permissions:
