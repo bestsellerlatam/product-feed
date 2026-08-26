@@ -214,6 +214,32 @@ const findOpt = (selectedOptions, kind) => {
   return hit?.value || null;
 };
 
+// Ordena talles: primero los alfabéticos conocidos (XS..3XL) por su rango,
+// después el resto (numéricos tipo "29-32", "TALLE UNICO") en orden natural.
+const SIZE_RANK = new Map(
+  ['xxs', 'xs', 's', 'm', 'l', 'xl', 'xxl', '2xl', 'xxxl', '3xl', '4xl']
+    .map((s, i) => [s, i])
+);
+const sortSizes = (arr) =>
+  [...arr].sort((a, b) => {
+    const ra = SIZE_RANK.get(String(a).toLowerCase().trim());
+    const rb = SIZE_RANK.get(String(b).toLowerCase().trim());
+    if (ra != null && rb != null) return ra - rb;
+    if (ra != null) return -1;
+    if (rb != null) return 1;
+    return String(a).localeCompare(String(b), 'es', { numeric: true });
+  });
+
+// Talles únicos presentes en una lista de variantes ya armadas (campo `size`).
+const sizesOf = (variants, onlyInStock) =>
+  sortSizes([
+    ...new Set(
+      variants
+        .filter((v) => v.size && (!onlyInStock || v.available))
+        .map((v) => v.size)
+    ),
+  ]);
+
 // ---------------------------------------------------------------------------
 // GTIN vs MPN
 //
@@ -399,6 +425,11 @@ function buildJson(products) {
       options: (p.options || []).map((o) => o.name),
       url: `https://${DOMAIN}/products/${p.handle}`,
       image: p.featuredImage?.url || null,
+      // Talles pre-calculados para el asistente de IA: así responde "en talles
+      // L, M y XL" sin tener que recorrer y filtrar `variants`. Vacíos si el
+      // producto no maneja talle (gift cards, talle único sin nombrar).
+      sizes_in_stock: sizesOf(variants, true),
+      sizes_all: sizesOf(variants, false),
       // clampeado igual que las variantes: el agregado puede venir negativo
       // cuando una tienda física quedó con stock en menos.
       total_inventory: p.totalInventory == null ? null : Math.max(0, p.totalInventory),
