@@ -1,14 +1,22 @@
 name: Keep-alive
 
 # GitHub deshabilita los workflows con `schedule` cuando el repo pasa 60 días
-# sin actividad de commits. Este job hace un commit vacío una vez por mes para
+# sin actividad de commits. Este job hace un commit vacío los días 1 y 15 para
 # resetear ese contador, así el cron horario de "Product feeds" nunca se apaga
 # solo. No toca archivos ni dispara otros workflows (los pushes hechos con
 # GITHUB_TOKEN no encadenan runs, y feed.yml no escucha `push`).
+#
+# Corre cada ~15 días y no una vez por mes para tener margen: GitHub a veces
+# retrasa o directamente saltea corridas programadas, y con cadencia mensual
+# una sola falla te deja pegado al límite de 60 días.
+#
+# El minuto 17 tampoco es capricho: los crons en :00 son los slots más
+# congestionados de GitHub Actions (todo el mundo elige la hora en punto), y
+# es justo cuando más se retrasan o se pierden corridas.
 
 on:
   schedule:
-    - cron: '17 6 1 * *'      # día 1 de cada mes, 06:17 UTC (horario de poca carga)
+    - cron: '17 6 1,15 * *'   # días 1 y 15, 06:17 UTC (minuto corrido a propósito, ver abajo)
   workflow_dispatch: {}        # y a mano desde la pestaña Actions
 
 permissions:
