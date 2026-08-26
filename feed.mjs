@@ -257,11 +257,30 @@ const priceOf = (v) => {
 };
 
 // ---------------------------------------------------------------------------
+// Stock
+//
+// `availableForSale` por sí solo no alcanza: con "continue selling when out of
+// stock" prendido Shopify lo devuelve true aunque no quede una sola unidad. Si
+// eso llega al asistente de IA, le ofrece al cliente algo que no se puede
+// despachar. Sin unidades, la variante va como agotada.
+//
+// Ojo con el otro lado: `inventoryQuantity` es la suma de TODAS las locations,
+// así que un -1 arrastrado en una tienda física puede hundir el total aunque el
+// depósito de Ecommerce tenga stock real. Cuando eso pase, esto va a ocultar
+// una variante vendible. La solución de fondo es leer la location del depósito
+// (inventoryItem.inventoryLevels) en vez del agregado.
+// ---------------------------------------------------------------------------
+const stockOf = (v) => {
+  const qty = Math.max(0, v.inventoryQuantity ?? 0);
+  return { qty, inStock: !!v.availableForSale && qty > 0 };
+};
+
+// ---------------------------------------------------------------------------
 // 4. XML (RSS 2.0 + g:)  — un <item> por variante
 // ---------------------------------------------------------------------------
 function buildXml(products) {
   const items = [];
-  const skipped = { noPrice: 0, noImage: 0, noGtin: 0 };
+  const skipped = { noPrice: 0, noImage: 0, noGtin: 0, sinStock: 0 };
   let variantCount = 0;
 
   for (const p of products) {
@@ -282,7 +301,8 @@ function buildXml(products) {
       const variantName = v.title && v.title !== 'Default Title' ? v.title : '';
       const fullTitle = variantName ? `${p.title} - ${variantName}` : p.title;
       const url = `https://${DOMAIN}/products/${p.handle}?variant=${vid}`;
-      const qty = Math.max(0, v.inventoryQuantity ?? 0);
+      const { qty, inStock } = stockOf(v);
+      if (v.availableForSale && !inStock) skipped.sinStock++;
       const size = findOpt(v.selectedOptions, 'size');
       const color = findOpt(v.selectedOptions, 'color');
       const desc = plainText(p.descriptionHtml);
@@ -294,7 +314,7 @@ function buildXml(products) {
       if (desc) L.push(`    <g:description>${esc(desc)}</g:description>`);
       L.push(`    <g:link>${esc(url)}</g:link>`);
       if (img) L.push(`    <g:image_link>${esc(img)}</g:image_link>`);
-      L.push(`    <g:availability>${v.availableForSale ? 'in stock' : 'out of stock'}</g:availability>`);
+      L.push(`    <g:availability>${inStock ? 'in stock' : 'out of stock'}</g:availability>`);
       L.push(`    <g:price>${esc(priceStr)}</g:price>`);
       if (salePriceStr) L.push(`    <g:sale_price>${esc(salePriceStr)}</g:sale_price>`);
       if (p.vendor) L.push(`    <g:brand>${esc(p.vendor)}</g:brand>`);
@@ -361,8 +381,8 @@ function buildJson(products) {
         price: regular,
         sale_price: sale,
         currency: CURRENCY,
-        available: !!v.availableForSale,
-        quantity: Math.max(0, v.inventoryQuantity ?? 0),
+        available: stockOf(v).inStock,
+        quantity: stockOf(v).qty,
         image: v.image?.url || p.featuredImage?.url || null,
         url: `https://${DOMAIN}/products/${p.handle}?variant=${numId(v.id)}`,
       });
@@ -379,7 +399,9 @@ function buildJson(products) {
       options: (p.options || []).map((o) => o.name),
       url: `https://${DOMAIN}/products/${p.handle}`,
       image: p.featuredImage?.url || null,
-      total_inventory: p.totalInventory ?? null,
+      // clampeado igual que las variantes: el agregado puede venir negativo
+      // cuando una tienda física quedó con stock en menos.
+      total_inventory: p.totalInventory == null ? null : Math.max(0, p.totalInventory),
       updated_at: p.updatedAt || null,
       variants,
     });
@@ -410,3 +432,4 @@ console.log(`[${SHOP}]   -> ${OUT_JSON}`);
 if (skipped.noPrice) console.log(`[${SHOP}]   ! ${skipped.noPrice} variantes sin precio (omitidas)`);
 if (skipped.noImage) console.log(`[${SHOP}]   ! ${skipped.noImage} variantes sin imagen (incluidas sin g:image_link)`);
 if (skipped.noGtin) console.log(`[${SHOP}]   ! ${skipped.noGtin} variantes sin un GTIN valido (van con g:mpn solo)`);
+if (skipped.sinStock) console.log(`[${SHOP}]   ! ${skipped.sinStock} variantes que Shopify daba por vendibles van como agotadas (quantity 0)`);
