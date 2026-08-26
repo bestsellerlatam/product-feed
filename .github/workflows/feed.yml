@@ -1,0 +1,114 @@
+name: Product feeds
+
+on:
+  schedule:
+    - cron: '0 * * * *'      # cada hora en punto (UTC)
+  workflow_dispatch: {}       # y a mano desde la pestaña Actions
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Un build por tienda, en paralelo. Cada uno deja dist/<key>/feed.{xml,json}
+  # y lo sube como artifact site-<key>.
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: jack-uy
+            shop: jack-jones-uy.myshopify.com
+            domain: jackjones.com.uy
+            currency: UYU
+            title: Jack & Jones Uruguay
+            token_secret: TOKEN_JACK_UY
+          - key: jack-cl
+            shop: jack-jones-ch.myshopify.com
+            domain: jackjones.cl
+            currency: CLP
+            title: Jack & Jones Chile
+            token_secret: TOKEN_JACK_CL
+          - key: only-uy
+            shop: bs-only-uruguay.myshopify.com
+            domain: only.com.uy
+            currency: UYU
+            title: Only Uruguay
+            token_secret: TOKEN_ONLY_UY
+          - key: only-cl
+            shop: bs-only-chile.myshopify.com
+            domain: only.cl
+            currency: CLP
+            title: Only Chile
+            token_secret: TOKEN_ONLY_CL
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generar feed (${{ matrix.key }})
+        run: node feed.mjs
+        env:
+          SHOP: ${{ matrix.shop }}
+          SHOPIFY_TOKEN: ${{ secrets[matrix.token_secret] }}
+          DOMAIN: ${{ matrix.domain }}
+          CURRENCY: ${{ matrix.currency }}
+          FEED_TITLE: ${{ matrix.title }}
+          OUT: dist/${{ matrix.key }}/feed.xml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-${{ matrix.key }}
+          path: dist/${{ matrix.key }}
+          if-no-files-found: error
+          retention-days: 3
+
+  # ---------------------------------------------------------------------------
+  # Junta los artifacts de las tiendas que sí buildearon, arma _site/ y hace
+  # UN solo deploy a Pages. Si una tienda falló, publica el resto igual.
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: _site
+          pattern: site-*
+
+      - name: Reorganizar y armar index
+        run: |
+          cd _site
+          for d in site-*; do mv "$d" "${d#site-}"; done
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>Product feeds — BESTSELLER</title>'
+            echo '<h1>Product feeds — BESTSELLER</h1><ul>'
+            for d in */; do
+              k="${d%/}"
+              echo "<li><strong>${k}</strong> — <a href=\"${k}/feed.xml\">feed.xml</a> · <a href=\"${k}/feed.json\">feed.json</a></li>"
+            done
+            echo '</ul>'
+          } > index.html
+          echo "Contenido de _site:" && find . -maxdepth 2 -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
