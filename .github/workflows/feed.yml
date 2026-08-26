@@ -2,7 +2,7 @@ name: Product feeds
 
 on:
   schedule:
-    - cron: '0 * * * *'      # cada hora en punto (UTC)
+    - cron: '24 * * * *'     # cada hora al minuto 24 (UTC) — :00 es el slot más congestionado
   workflow_dispatch: {}       # y a mano desde la pestaña Actions
 
 permissions:
