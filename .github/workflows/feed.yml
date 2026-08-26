@@ -51,11 +51,11 @@ jobs:
             title: Only Chile
             token_secret: TOKEN_ONLY_CL
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Generar feed (${{ matrix.key }})
         run: node feed.mjs
@@ -67,7 +67,7 @@ jobs:
           FEED_TITLE: ${{ matrix.title }}
           OUT: dist/${{ matrix.key }}/feed.xml
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: site-${{ matrix.key }}
           path: dist/${{ matrix.key }}
@@ -86,7 +86,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: _site
           pattern: site-*
@@ -106,9 +106,9 @@ jobs:
           } > index.html
           echo "Contenido de _site:" && find . -maxdepth 2 -type f | sort
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
