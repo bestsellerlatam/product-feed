@@ -100,7 +100,7 @@ jobs:
             echo '<h1>Product feeds — BESTSELLER</h1><ul>'
             for d in */; do
               k="${d%/}"
-              echo "<li><strong>${k}</strong> — <a href=\"${k}/feed.xml\">feed.xml</a> · <a href=\"${k}/feed.json\">feed.json</a></li>"
+              echo "<li><strong>${k}</strong> — <a href=\"${k}/feed.xml\">feed.xml</a> · <a href=\"${k}/feed.json\">feed.json</a> · <a href=\"${k}/draft.json\">draft.json</a></li>"
             done
             echo '</ul>'
           } > index.html

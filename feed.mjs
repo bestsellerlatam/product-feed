@@ -12,6 +12,7 @@ const CURRENCY  = process.env.CURRENCY || 'USD';
 const API       = process.env.API_VERSION || '2026-07';
 const OUT       = process.env.OUT || 'dist/feed.xml';
 const OUT_JSON  = process.env.OUT_JSON || OUT.replace(/\.xml$/i, '.json');
+const OUT_DRAFT = process.env.OUT_DRAFT || OUT.replace(/feed\.xml$/i, 'draft.json');
 const TITLE     = process.env.FEED_TITLE || DOMAIN;
 
 const ENDPOINT = `https://${SHOP}/admin/api/${API}/graphql.json`;
@@ -112,11 +113,30 @@ const BULK_QUERY = `
   }
 }`;
 
-const START = `
-mutation {
-  bulkOperationRunQuery(query: ${JSON.stringify(BULK_QUERY)}) {
-    bulkOperation { id status }
-    userErrors { field message }
+// Query "espejo" para DRAFT: solo lo que hace falta para identificar el
+// artículo (nombre, código, variante, color) — sin precio, sin stock, sin
+// imagen ni descripción. Un draft no se puede comprar, así que el resto de
+// los campos serían ruido o, peor, datos que parecen accionables y no lo son.
+const DRAFT_QUERY = `
+{
+  products(query: "status:draft") {
+    edges {
+      node {
+        id
+        handle
+        title
+        variants {
+          edges {
+            node {
+              id
+              sku
+              title
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
   }
 }`;
 
@@ -124,31 +144,39 @@ const POLL = `{
   currentBulkOperation { id status errorCode objectCount fileSize url }
 }`;
 
-async function runBulk() {
-  const start = await gql(START);
+// Shopify solo corre UNA bulk operation a la vez por tienda, así que las dos
+// queries (activos, draft) van secuenciales dentro del mismo job, no en paralelo.
+async function runBulk(query, label) {
+  const start = await gql(`
+mutation {
+  bulkOperationRunQuery(query: ${JSON.stringify(query)}) {
+    bulkOperation { id status }
+    userErrors { field message }
+  }
+}`);
   const errs = start.bulkOperationRunQuery.userErrors;
-  if (errs.length) throw new Error('bulkOperationRunQuery: ' + JSON.stringify(errs, null, 2));
+  if (errs.length) throw new Error(`bulkOperationRunQuery (${label}): ` + JSON.stringify(errs, null, 2));
 
   const MAX_MS = 20 * 60 * 1000;
   const t0 = Date.now();
-  console.log(`[${SHOP}] bulk lanzado, esperando...`);
+  console.log(`[${SHOP}] bulk (${label}) lanzado, esperando...`);
 
   while (true) {
     await sleep(5000);
     const { currentBulkOperation: op } = await gql(POLL);
-    process.stdout.write(`  [${SHOP}] ${op.status} — ${op.objectCount || 0} objetos\r`);
+    process.stdout.write(`  [${SHOP}] (${label}) ${op.status} — ${op.objectCount || 0} objetos\r`);
 
     if (op.status === 'COMPLETED') {
-      console.log(`\n[${SHOP}] bulk completo: ${op.objectCount} objetos`);
+      console.log(`\n[${SHOP}] bulk (${label}) completo: ${op.objectCount} objetos`);
       if (!op.url) return []; // catálogo vacío
       const jsonl = await (await fetch(op.url)).text();
       return jsonl.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
     }
     if (['FAILED', 'CANCELED', 'EXPIRED'].includes(op.status)) {
-      throw new Error(`[${SHOP}] bulk ${op.status}: ${op.errorCode}`);
+      throw new Error(`[${SHOP}] bulk (${label}) ${op.status}: ${op.errorCode}`);
     }
     if (Date.now() - t0 > MAX_MS) {
-      throw new Error(`[${SHOP}] bulk timeout tras 20 min (status ${op.status})`);
+      throw new Error(`[${SHOP}] bulk (${label}) timeout tras 20 min (status ${op.status})`);
     }
   }
 }
@@ -448,14 +476,54 @@ function buildJson(products) {
 }
 
 // ---------------------------------------------------------------------------
-const rows = await runBulk();
+// 6. JSON de productos DRAFT — para que el asistente de IA distinga "no lo
+// conozco" de "existe pero no está online ahora". A propósito NO lleva url,
+// price, quantity ni image: un draft no se puede comprar ni tiene página
+// pública, y publicar esos campos invitaría a ofrecerlo como si lo fuera.
+// El código de estilo sale del prefijo del handle, igual que en el resto del
+// feed (ver la nota de GTIN vs MPN más arriba) — no es un campo de Shopify,
+// es la convención de handle que usan estas tiendas.
+// ---------------------------------------------------------------------------
+function buildDraftJson(products) {
+  const out = [];
+  for (const p of products) {
+    if (!p.variants.length) continue;
+    out.push({
+      title: p.title,
+      code: String(p.handle).match(/^(\d{4,10})(?:_|$)/)?.[1] || null,
+      handle: p.handle,
+      variants: p.variants.map((v) => ({
+        sku: v.sku || null,
+        title: v.title && v.title !== 'Default Title' ? v.title : null,
+        size: findOpt(v.selectedOptions, 'size'),
+        color: findOpt(v.selectedOptions, 'color'),
+      })),
+    });
+  }
+  return {
+    store: SHOP,
+    status: 'draft',
+    note: 'Productos NO disponibles para la venta online. Sin link, precio ni stock a propósito — no ofrecer, solo informar que el modelo existe.',
+    generated_at: new Date().toISOString(),
+    product_count: out.length,
+    products: out,
+  };
+}
+
+// ---------------------------------------------------------------------------
+const rows = await runBulk(BULK_QUERY, 'activos');
 const products = nest(rows);
 const { xml, variantCount, skipped } = buildXml(products);
 const json = buildJson(products);
 
+const draftRows = await runBulk(DRAFT_QUERY, 'draft');
+const draftProducts = nest(draftRows);
+const draftJson = buildDraftJson(draftProducts);
+
 await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, xml, 'utf8');
 await writeFile(OUT_JSON, JSON.stringify(json, null, 2), 'utf8');
+await writeFile(OUT_DRAFT, JSON.stringify(draftJson, null, 2), 'utf8');
 
 console.log(`[${SHOP}] OK: ${products.length} productos / ${variantCount} variantes`);
 console.log(`[${SHOP}]   -> ${OUT}`);
@@ -464,3 +532,5 @@ if (skipped.noPrice) console.log(`[${SHOP}]   ! ${skipped.noPrice} variantes sin
 if (skipped.noImage) console.log(`[${SHOP}]   ! ${skipped.noImage} variantes sin imagen (incluidas sin g:image_link)`);
 if (skipped.noGtin) console.log(`[${SHOP}]   ! ${skipped.noGtin} variantes sin un GTIN valido (van con g:mpn solo)`);
 if (skipped.sinStock) console.log(`[${SHOP}]   ! ${skipped.sinStock} variantes que Shopify daba por vendibles van como agotadas (quantity 0)`);
+console.log(`[${SHOP}] DRAFT: ${draftJson.product_count} productos`);
+console.log(`[${SHOP}]   -> ${OUT_DRAFT}`);

@@ -20,17 +20,25 @@ Por cada tienda, en `https://<owner>.github.io/product-feed/<key>/`:
   campos extra (`<option>`, `<tags>`, `<quantity>`, `<handle>`, ...) para que un
   asistente de IA tenga la info completa.
 - `feed.json` — mismo contenido, estructura producto → variantes, cómodo para RAG/LLM.
+- `draft.json` — productos `status:draft` (no comprables, sin página pública).
+  Solo `title`, `code` (estilo, del prefijo del handle), `handle` y por variante
+  `sku` / `title` / `size` / `color`. A propósito **sin** `url`, precio ni stock:
+  la idea es que un asistente de IA pueda decir "ese modelo existe pero no está
+  online" en vez de "no lo conozco", sin terminar ofreciéndolo como si tuviera
+  link o precio válido.
 
-Solo productos `status:active`. El stock viene de `inventoryQuantity` (requiere
-scope `read_inventory`), clampeado a 0.
+Solo productos `status:active` van en `feed.xml`/`feed.json`. El stock viene de
+`inventoryQuantity` (requiere scope `read_inventory`), clampeado a 0.
 
 ## Cómo anda
 
-1. `bulkOperationRunQuery` del Admin API baja el catálogo entero sin paginar.
+1. `bulkOperationRunQuery` del Admin API baja el catálogo activo sin paginar.
 2. Polling hasta `COMPLETED`, se baja el JSONL (viene plano, variantes
    enlazadas por `__parentId`).
-3. Se arma `feed.xml` + `feed.json` en `dist/<key>/`.
-4. El job `deploy` junta las 4 tiendas en `_site/` y publica todo junto.
+3. Se repite 1-2 para `status:draft` — Shopify solo corre una bulk operation
+   por vez por tienda, así que van secuenciales, no en paralelo.
+4. Se arma `feed.xml` + `feed.json` + `draft.json` en `dist/<key>/`.
+5. El job `deploy` junta las 4 tiendas en `_site/` y publica todo junto.
 
 ## Correr local
 
@@ -43,8 +51,9 @@ FEED_TITLE="Jack & Jones Uruguay" \
 node feed.mjs
 ```
 
-Genera `dist/feed.xml` y `dist/feed.json`. Variables opcionales: `API_VERSION`
-(default `2026-07`), `OUT` (default `dist/feed.xml`), `OUT_JSON`.
+Genera `dist/feed.xml`, `dist/feed.json` y `dist/draft.json`. Variables
+opcionales: `API_VERSION` (default `2026-07`), `OUT` (default `dist/feed.xml`),
+`OUT_JSON`, `OUT_DRAFT`.
 
 ## Secrets requeridos (repo → Settings → Secrets and variables → Actions)
 
