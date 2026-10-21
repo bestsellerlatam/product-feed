@@ -13,6 +13,8 @@ const API       = process.env.API_VERSION || '2026-07';
 const OUT       = process.env.OUT || 'dist/feed.xml';
 const OUT_JSON  = process.env.OUT_JSON || OUT.replace(/\.xml$/i, '.json');
 const OUT_DRAFT = process.env.OUT_DRAFT || OUT.replace(/feed\.xml$/i, 'draft.json');
+// Por defecto se genera; solo "0", "false" o "no" lo apagan (vacío = prendido).
+const INCLUDE_DRAFT = !/^(0|false|no)$/i.test((process.env.INCLUDE_DRAFT || '').trim());
 const TITLE     = process.env.FEED_TITLE || DOMAIN;
 
 const ENDPOINT = `https://${SHOP}/admin/api/${API}/graphql.json`;
@@ -516,14 +518,15 @@ const products = nest(rows);
 const { xml, variantCount, skipped } = buildXml(products);
 const json = buildJson(products);
 
-const draftRows = await runBulk(DRAFT_QUERY, 'draft');
-const draftProducts = nest(draftRows);
-const draftJson = buildDraftJson(draftProducts);
+// draft.json es opcional por tienda (INCLUDE_DRAFT=false lo saltea, y de paso
+// ahorra la segunda bulk operation): el archivo es público y lista nombres y
+// EAN de productos todavía sin lanzar.
+const draftJson = INCLUDE_DRAFT ? buildDraftJson(nest(await runBulk(DRAFT_QUERY, 'draft'))) : null;
 
 await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, xml, 'utf8');
 await writeFile(OUT_JSON, JSON.stringify(json, null, 2), 'utf8');
-await writeFile(OUT_DRAFT, JSON.stringify(draftJson, null, 2), 'utf8');
+if (draftJson) await writeFile(OUT_DRAFT, JSON.stringify(draftJson, null, 2), 'utf8');
 
 console.log(`[${SHOP}] OK: ${products.length} productos / ${variantCount} variantes`);
 console.log(`[${SHOP}]   -> ${OUT}`);
@@ -532,5 +535,9 @@ if (skipped.noPrice) console.log(`[${SHOP}]   ! ${skipped.noPrice} variantes sin
 if (skipped.noImage) console.log(`[${SHOP}]   ! ${skipped.noImage} variantes sin imagen (incluidas sin g:image_link)`);
 if (skipped.noGtin) console.log(`[${SHOP}]   ! ${skipped.noGtin} variantes sin un GTIN valido (van con g:mpn solo)`);
 if (skipped.sinStock) console.log(`[${SHOP}]   ! ${skipped.sinStock} variantes que Shopify daba por vendibles van como agotadas (quantity 0)`);
-console.log(`[${SHOP}] DRAFT: ${draftJson.product_count} productos`);
-console.log(`[${SHOP}]   -> ${OUT_DRAFT}`);
+if (draftJson) {
+  console.log(`[${SHOP}] DRAFT: ${draftJson.product_count} productos`);
+  console.log(`[${SHOP}]   -> ${OUT_DRAFT}`);
+} else {
+  console.log(`[${SHOP}] DRAFT: salteado (INCLUDE_DRAFT=false)`);
+}

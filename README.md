@@ -14,6 +14,7 @@ Por cada tienda, en `https://<owner>.github.io/product-feed/<key>/`:
 | `jack-cl` | jack-jones-ch.myshopify.com | jackjones.cl | CLP |
 | `only-uy` | bs-only-uruguay.myshopify.com | only.com.uy | UYU |
 | `only-cl` | bs-only-chile.myshopify.com | only.cl | CLP |
+| `balmohk-uy` | balmohk-urguay.myshopify.com (el typo es el dominio real) | balmohk.com.uy | UYU |
 
 - `feed.xml` — RSS 2.0 con namespace `g:` (formato Google Merchant), un `<item>`
   por variante, `g:item_group_id` = id del producto padre. Enriquecido con
@@ -25,7 +26,9 @@ Por cada tienda, en `https://<owner>.github.io/product-feed/<key>/`:
   `sku` / `title` / `size` / `color`. A propósito **sin** `url`, precio ni stock:
   la idea es que un asistente de IA pueda decir "ese modelo existe pero no está
   online" en vez de "no lo conozco", sin terminar ofreciéndolo como si tuviera
-  link o precio válido.
+  link o precio válido. Es público, así que es opcional por tienda: con
+  `draft: false` en la matriz del workflow (env `INCLUDE_DRAFT=false`) no se
+  genera ni se publica. Hoy está apagado para `balmohk-uy`.
 
 Solo productos `status:active` van en `feed.xml`/`feed.json`. El stock viene de
 `inventoryQuantity` (requiere scope `read_inventory`), clampeado a 0.
@@ -63,6 +66,7 @@ Un Admin API access token por tienda:
 - `TOKEN_JACK_CL`
 - `TOKEN_ONLY_UY`
 - `TOKEN_ONLY_CL`
+- `TOKEN_BALMOHK_UY` (app `get_products_bmk`, solo `read_products` + `read_inventory`; no usar una app con permisos de escritura, el repo es público)
 
 ## Pages
 
