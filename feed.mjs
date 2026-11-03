@@ -356,7 +356,10 @@ function buildXml(products) {
       const vid = numId(v.id);
       const variantName = v.title && v.title !== 'Default Title' ? v.title : '';
       const fullTitle = variantName ? `${p.title} - ${variantName}` : p.title;
-      const url = `https://${DOMAIN}/products/${p.handle}?variant=${vid}`;
+      // Link del producto base, SIN ?variant=: todas las tallas de un producto
+      // comparten link, así un bot que visite links ve un producto, no una talla.
+      // shortcut: si este XML se enchufa a Google/Meta, volver a poner ?variant=${vid}.
+      const url = `https://${DOMAIN}/products/${p.handle}`;
       const { qty, inStock } = stockOf(v);
       if (v.availableForSale && !inStock) skipped.sinStock++;
       const size = findOpt(v.selectedOptions, 'size');
@@ -440,7 +443,7 @@ function buildJson(products) {
         available: stockOf(v).inStock,
         quantity: stockOf(v).qty,
         image: v.image?.url || p.featuredImage?.url || null,
-        url: `https://${DOMAIN}/products/${p.handle}?variant=${numId(v.id)}`,
+        url: `https://${DOMAIN}/products/${p.handle}`, // base, igual que products[].url
       });
     }
     if (!variants.length) continue;

@@ -21,6 +21,12 @@ Por cada tienda, en `https://<owner>.github.io/product-feed/<key>/`:
   campos extra (`<option>`, `<tags>`, `<quantity>`, `<handle>`, ...) para que un
   asistente de IA tenga la info completa.
 - `feed.json` — mismo contenido, estructura producto → variantes, cómodo para RAG/LLM.
+  Un bot que quiera **un producto = una entrada** (y su primera foto en `image`)
+  debe leer este, no el XML: el XML trae un `<item>` por talle.
+
+Ningún link lleva `?variant=`: todas las variantes de un producto apuntan al
+mismo link base (`https://<dominio>/products/<handle>`), tanto en el XML
+(`g:link`) como en `products[].url` y `variants[].url` del JSON.
 - `draft.json` — productos `status:draft` (no comprables, sin página pública).
   Solo `title`, `code` (estilo, del prefijo del handle), `handle` y por variante
   `sku` / `title` / `size` / `color`. A propósito **sin** `url`, precio ni stock:
