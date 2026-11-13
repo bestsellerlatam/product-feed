@@ -31,7 +31,7 @@ function requireEnv(name) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------------------
-// GraphQL con reintentos (429 / 5xx / error de red)
+// GraphQL con reintentos (429 / 5xx / THROTTLED / error de red)
 // ---------------------------------------------------------------------------
 async function gql(query, tries = 4) {
   for (let attempt = 1; ; attempt++) {
@@ -67,138 +67,76 @@ async function gql(query, tries = 4) {
     } catch {
       throw new Error(`Respuesta no-JSON: ${text.slice(0, 500)}`);
     }
+    // Shopify avisa del límite de puntos con HTTP 200 + THROTTLED: esperar y repetir.
+    if (json.errors?.some((e) => e.extensions?.code === 'THROTTLED')) {
+      if (attempt >= tries + 4) throw new Error('THROTTLED tras reintentos');
+      await sleep(attempt * 2000);
+      continue;
+    }
     if (json.errors) throw new Error(JSON.stringify(json.errors, null, 2));
-    return json.data;
+    return json; // { data, extensions: { cost } }
   }
 }
 
 // ---------------------------------------------------------------------------
-// 1. Bulk operation
-//    - En bulk las conexiones anidadas NO llevan argumentos (variants{edges{node}}).
-//    - featuredImage / image son objetos sueltos => vienen inline, no como filas.
-//    - tags / options / selectedOptions son listas planas => vienen inline.
+// 1. Lectura paginada (sin bulk operations)
+//    Shopify exige IP allowlist para las bulk operations y los runners de
+//    GitHub cambian de IP en cada corrida, así que se piden las variantes de a
+//    páginas con `productVariants`: cada una trae los datos de su producto y
+//    acá se agrupan por producto. Las consultas normales no piden allowlist.
 // ---------------------------------------------------------------------------
-const BULK_QUERY = `
-{
-  products(query: "status:active") {
-    edges {
-      node {
-        id
-        handle
-        title
-        descriptionHtml
-        vendor
-        productType
-        tags
-        updatedAt
-        totalInventory
-        options { name }
-        featuredImage { url }
-        variants {
-          edges {
-            node {
-              id
-              sku
-              title
-              price
-              compareAtPrice
-              availableForSale
-              inventoryQuantity
-              barcode
-              selectedOptions { name value }
-              image { url }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
+const ACTIVE_NODE = `
+  id sku title price compareAtPrice availableForSale inventoryQuantity barcode position
+  selectedOptions { name value }
+  image { url }
+  product { id handle title descriptionHtml vendor productType tags updatedAt totalInventory options { name } featuredImage { url } }`;
 
-// Query "espejo" para DRAFT: solo lo que hace falta para identificar el
-// artículo (nombre, código, variante, color) — sin precio, sin stock, sin
-// imagen ni descripción. Un draft no se puede comprar, así que el resto de
-// los campos serían ruido o, peor, datos que parecen accionables y no lo son.
-const DRAFT_QUERY = `
-{
-  products(query: "status:draft") {
-    edges {
-      node {
-        id
-        handle
-        title
-        variants {
-          edges {
-            node {
-              id
-              sku
-              title
-              selectedOptions { name value }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
+// DRAFT: solo lo que hace falta para identificar el artículo (nombre, código,
+// variante, color) — sin precio, sin stock, sin imagen ni descripción. Un draft
+// no se puede comprar, así que el resto de los campos serían ruido o, peor,
+// datos que parecen accionables y no lo son.
+const DRAFT_NODE = `
+  id sku title position
+  selectedOptions { name value }
+  product { id handle title }`;
 
-const POLL = `{
-  currentBulkOperation { id status errorCode objectCount fileSize url }
-}`;
+// Devuelve [{...producto, variants: [...]}]. `status` = active | draft.
+async function fetchProducts(status, node, label, pageSize) {
+  const byId = new Map();
+  let after = null;
+  let pages = 0;
+  let nVariants = 0;
 
-// Shopify solo corre UNA bulk operation a la vez por tienda, así que las dos
-// queries (activos, draft) van secuenciales dentro del mismo job, no en paralelo.
-async function runBulk(query, label) {
-  const start = await gql(`
-mutation {
-  bulkOperationRunQuery(query: ${JSON.stringify(query)}) {
-    bulkOperation { id status }
-    userErrors { field message }
+  do {
+    const json = await gql(`{
+  productVariants(first: ${pageSize}, query: "product_status:${status}"${after ? `, after: ${JSON.stringify(after)}` : ''}) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ${node} }
   }
 }`);
-  const errs = start.bulkOperationRunQuery.userErrors;
-  if (errs.length) throw new Error(`bulkOperationRunQuery (${label}): ` + JSON.stringify(errs, null, 2));
+    const { nodes, pageInfo } = json.data.productVariants;
+    for (const { product, ...variant } of nodes) {
+      if (!product) continue;
+      if (!byId.has(product.id)) byId.set(product.id, { ...product, variants: [] });
+      byId.get(product.id).variants.push(variant);
+    }
+    nVariants += nodes.length;
+    pages++;
+    after = pageInfo.hasNextPage ? pageInfo.endCursor : null;
 
-  const MAX_MS = 20 * 60 * 1000;
-  const t0 = Date.now();
-  console.log(`[${SHOP}] bulk (${label}) lanzado, esperando...`);
+    // Pacing: si el balde de puntos no alcanza para otra página igual, esperar
+    // a que se reponga en vez de comerse un THROTTLED.
+    const cost = json.extensions?.cost;
+    const ts = cost?.throttleStatus;
+    if (after && ts && ts.currentlyAvailable < cost.requestedQueryCost) {
+      await sleep(Math.ceil(((cost.requestedQueryCost - ts.currentlyAvailable) / ts.restoreRate) * 1000));
+    }
+  } while (after);
 
-  while (true) {
-    await sleep(5000);
-    const { currentBulkOperation: op } = await gql(POLL);
-    process.stdout.write(`  [${SHOP}] (${label}) ${op.status} — ${op.objectCount || 0} objetos\r`);
-
-    if (op.status === 'COMPLETED') {
-      console.log(`\n[${SHOP}] bulk (${label}) completo: ${op.objectCount} objetos`);
-      if (!op.url) return []; // catálogo vacío
-      const jsonl = await (await fetch(op.url)).text();
-      return jsonl.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    }
-    if (['FAILED', 'CANCELED', 'EXPIRED'].includes(op.status)) {
-      throw new Error(`[${SHOP}] bulk (${label}) ${op.status}: ${op.errorCode}`);
-    }
-    if (Date.now() - t0 > MAX_MS) {
-      throw new Error(`[${SHOP}] bulk (${label}) timeout tras 20 min (status ${op.status})`);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 2. Rearmar producto -> variantes (JSONL plano, enlace por __parentId)
-// ---------------------------------------------------------------------------
-function nest(rows) {
-  const products = new Map();
-  for (const row of rows) {
-    if (String(row.id).startsWith('gid://shopify/Product/')) {
-      products.set(row.id, { ...row, variants: [] });
-    }
-  }
-  for (const row of rows) {
-    if (String(row.id).startsWith('gid://shopify/ProductVariant/') && products.has(row.__parentId)) {
-      products.get(row.__parentId).variants.push(row);
-    }
-  }
-  return [...products.values()];
+  console.log(`[${SHOP}] (${label}) ${byId.size} productos / ${nVariants} variantes en ${pages} páginas`);
+  const products = [...byId.values()].sort((a, b) => Number(numId(a.id)) - Number(numId(b.id)));
+  for (const p of products) p.variants.sort((a, b) => a.position - b.position);
+  return products;
 }
 
 // ---------------------------------------------------------------------------
@@ -516,15 +454,14 @@ function buildDraftJson(products) {
 }
 
 // ---------------------------------------------------------------------------
-const rows = await runBulk(BULK_QUERY, 'activos');
-const products = nest(rows);
+const products = await fetchProducts('active', ACTIVE_NODE, 'activos', 100);
 const { xml, variantCount, skipped } = buildXml(products);
 const json = buildJson(products);
 
 // draft.json es opcional por tienda (INCLUDE_DRAFT=false lo saltea, y de paso
-// ahorra la segunda bulk operation): el archivo es público y lista nombres y
+// ahorra la segunda lectura): el archivo es público y lista nombres y
 // EAN de productos todavía sin lanzar.
-const draftJson = INCLUDE_DRAFT ? buildDraftJson(nest(await runBulk(DRAFT_QUERY, 'draft'))) : null;
+const draftJson = INCLUDE_DRAFT ? buildDraftJson(await fetchProducts('draft', DRAFT_NODE, 'draft', 250)) : null;
 
 await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, xml, 'utf8');

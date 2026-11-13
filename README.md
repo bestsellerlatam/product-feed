@@ -41,13 +41,16 @@ Solo productos `status:active` van en `feed.xml`/`feed.json`. El stock viene de
 
 ## Cómo anda
 
-1. `bulkOperationRunQuery` del Admin API baja el catálogo activo sin paginar.
-2. Polling hasta `COMPLETED`, se baja el JSONL (viene plano, variantes
-   enlazadas por `__parentId`).
-3. Se repite 1-2 para `status:draft` — Shopify solo corre una bulk operation
-   por vez por tienda, así que van secuenciales, no en paralelo.
+1. `productVariants` del Admin API, de a 100 por página (250 en draft), trae cada
+   variante con los datos de su producto; se agrupan por producto. **No se usan
+   bulk operations**: Shopify las exige con IP allowlist y los runners de GitHub
+   cambian de IP en cada corrida (aviso del 12/11/2026, ASN 14618 / AWS).
+2. Si el balde de puntos de la API no alcanza, espera a que se reponga.
+3. Se repite para `status:draft` (si la tienda lo tiene prendido).
 4. Se arma `feed.xml` + `feed.json` + `draft.json` en `dist/<key>/`.
-5. El job `deploy` junta las 4 tiendas en `_site/` y publica todo junto.
+5. El job `deploy` junta las tiendas en `_site/` y publica todo junto. Si una
+   tienda falló, re-publica su último feed bueno (el que ya está en Pages) en
+   vez de dejarla en 404; `generated_at` del JSON muestra la antigüedad.
 
 ## Correr local
 

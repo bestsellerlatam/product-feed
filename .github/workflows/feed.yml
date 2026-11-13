@@ -101,6 +101,21 @@ jobs:
           path: _site
           pattern: site-*
 
+      # Si una tienda falló en esta corrida, se re-publica su último feed bueno
+      # (el que ya está en Pages) en vez de dejarla en 404 hasta la próxima hora.
+      # Ojo: al agregar una tienda a la matriz de arriba, sumarla a esta lista.
+      - name: Conservar último feed de las tiendas que fallaron
+        run: |
+          mkdir -p _site && cd _site
+          for k in jack-uy jack-cl only-uy only-cl balmohk-uy; do
+            [ -d "site-$k" ] && continue
+            mkdir "site-$k"
+            for f in feed.xml feed.json draft.json; do
+              curl -fsS -o "site-$k/$f" "https://bestsellerlatam.github.io/product-feed/$k/$f" || rm -f "site-$k/$f"
+            done
+            rmdir "site-$k" 2>/dev/null && echo "::warning::$k falló y no hay feed previo que conservar" || echo "$k falló: se conserva el feed anterior"
+          done
+
       - name: Reorganizar y armar index
         run: |
           cd _site
